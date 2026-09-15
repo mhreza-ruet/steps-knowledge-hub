@@ -1,0 +1,57 @@
+# Deny files by default; traverse directories to find allowed source files.
+*
+!*/
+!.gitignore
+!*.py
+!*.ipynb
+!*.sh
+
+# Setup and dependency files only. Do not allow arbitrary .txt data files.
+!requirements.txt
+!requirements-*.txt
+!requirements_*.txt
+!requirements/*.txt
+!constraints.txt
+!constraints-*.txt
+!setup.txt
+!pyproject.toml
+!setup.cfg
+!Pipfile
+!Pipfile.lock
+!poetry.lock
+!uv.lock
+!environment.yml
+!environment.yaml
+!Makefile
+!Dockerfile
+
+# Local environments, caches, and generated artifacts remain excluded.
+.git/
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+.ipynb_checkpoints/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+node_modules/
+build/
+dist/
+*.egg-info/
+.vscode/
+.idea/
+
+# Known data/output locations, including text labels and extracted content.
+[Dd]ata/
+[Dd]ataset/
+[Dd]atasets/
+yolo_dataset/
+[Oo]utput/
+[Oo]utputs/
+gold_tables/
+prompt_logs/

@@ -1,0 +1,5 @@
+# STEPS-LLM Pipeline — Python dependencies
+# Install with:  pip install -r requirements.txt
+
+# Stage 01 — PDF to images
+pymupdf>=1.24.0          # fitz: fast PDF rendering, MIT licensed

@@ -1,0 +1,109 @@
+# config.py
+from dotenv import load_dotenv
+
+def get_experiment():
+    # Load .env (OPENAI_API_KEY)
+    load_dotenv()
+
+    active_equation = "Langmuir_isotherm"
+
+    equation_library = {
+        "Langmuir_isotherm": {
+            "paper_mode": "equilibrium_isotherm",
+            "title_rules": "Return a single concise title (8–14 words). No LaTeX commands, no quotes, no math.",
+
+            "context": (
+                "Write an observations-style report of phosphate adsorption equilibrium in saline soils "
+                "using batch adsorption tests. Each run records an initial phosphate concentration, an "
+                "equilibrium concentration, and an equilibrium adsorption capacity. Adsorption behavior "
+                "is interpreted using an equilibrium isotherm framework with a finite adsorption capacity "
+                "and an adsorption affinity parameter. Describe what was done and what was recorded, "
+                "not how data were generated."
+            ),
+
+            "motivation": (
+                "Provide a clear lab-note summary: state the number of runs, the recorded ranges and summary "
+                "statistics, and describe how equilibrium adsorption changed with concentration across runs. "
+                "Focus on adsorption capacity, equilibrium behavior, and adsorption favorability."
+            ),
+
+            # Only keep variables relevant to this equation family
+            "inputs": {
+                "C0_(mg/L)"   : ("mg/L", "uniform", [5.0, 80.0]),
+                "m_(g)"       : ("g",    "uniform", [0.20, 1.00]),
+                "V_(L)"       : ("L",    "uniform", [0.020, 0.100]),
+                "qmax_(mg/g)" : ("mg/g", "uniform", [0.50, 10.0]),
+                "KL_(L/mg)"   : ("L/mg", "uniform", [0.01, 0.50]),
+            },
+
+            # Keep equations modular so later you can switch cleanly
+            "equations": {
+                "Langmuir_isotherm": "qe = (qmax * KL * Ce) / (1 + KL * Ce)",
+                "Mass_balance"     : "C0 = Ce + (m/V) * qe",
+                "Capacity_calc"    : "qe = ((C0 - Ce) * V) / m",
+                "Separation_factor": "RL = 1 / (1 + KL * C0)",
+            },
+
+            "noise": {
+                "Ce_sd_frac_of_C0": 0.02,
+            },
+
+            # Only notation relevant to this equation/report
+            "notation_families": ["env_standard", "chem_eng", "materials", "soil_geo"],
+            "notation_family": "soil_geo",
+        }
+    }
+
+    eqcfg = equation_library[active_equation]
+
+    experiment = {
+        "active_equation": active_equation,
+        "paper_mode": eqcfg["paper_mode"],
+
+        "title_rules": eqcfg["title_rules"],
+        "context": eqcfg["context"],
+        "motivation": eqcfg["motivation"],
+
+        "NUM_DATASETS": 4,
+        "N_RUNS": 10,
+
+        # Keep this for compatibility with existing code.
+        # Langmuir-only mode does not need time-series, but we do not remove it yet.
+        "times_min": [0, 2, 5, 10, 20, 30, 45, 60, 90, 120],
+
+        "inputs": eqcfg["inputs"],
+        "equations": eqcfg["equations"],
+        "noise": eqcfg["noise"],
+
+        "notation_families": eqcfg["notation_families"],
+        "notation_family": eqcfg["notation_family"],
+
+        "INCLUDE_FULL_TABLE": True,
+
+        "paper_words": 1600,
+        "tok_paper": 3000,
+        "model_id": "gpt-4.1",
+
+        "out_dir": "Output",
+        "rng_seed": None,
+        "per_report_seed": True,
+    }
+
+    experiment["constraints"] = (
+        "[INSTRUCTIONS—DO NOT INCLUDE THIS PARAGRAPH IN THE PAPER]\n"
+        "Write in PASSIVE VOICE ONLY.\n"
+        "Do NOT use any sectioning commands (no \\section, \\subsection, etc.).\n"
+        "Do NOT use any LaTeX environments like abstract.\n"
+        "The first paragraph must summarize the work WITHOUT using any variable names.\n"
+        "From the second paragraph onward, variables may be used but must be italic and correctly subscripted.\n"
+        "Do NOT include any equations or explicit functional forms.\n"
+        "No bullet lists.\n"
+        "If tables are referenced, they MUST use LaTeX refs only: Table~\\ref{<LABEL>}.\n"
+        "Never write 'Table 1' or 'Table 2' in plain text.\n"
+        "If a second table is present, it must be referenced as Table~\\ref{tab:full}.\n"
+        "If a second table is not present, do not mention it.\n"
+        f"Use the actual number of runs N={experiment['N_RUNS']}.\n"
+        f"Use the actual number of recorded rows N_total={experiment['N_RUNS']}.\n"
+    )
+
+    return experiment

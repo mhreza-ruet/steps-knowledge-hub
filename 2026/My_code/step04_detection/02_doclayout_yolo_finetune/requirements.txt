@@ -1,0 +1,10 @@
+# Verified notebook environment. PyTorch must support your GPU backend.
+doclayout-yolo==0.0.4
+torch==2.9.1
+torchvision==0.24.1
+# 5.0 bundles video classes that conflict with PyAV on this Mac.
+# Both names are required by the upstream DocLayout/Albumentations metadata.
+opencv-python==4.11.0.86
+opencv-python-headless==4.11.0.86
+albumentations==2.0.8
+ipywidgets==8.1.9
