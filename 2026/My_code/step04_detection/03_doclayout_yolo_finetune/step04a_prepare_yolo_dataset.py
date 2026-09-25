@@ -61,7 +61,7 @@ except ImportError:
 
 # Reuse step03's box-resolution logic instead of re-deriving it.
 # Folder layout: My_code/step03_labelbox_export/step03_labelbox_export_to_dataset.py
-#                My_code/step04_detection/02_doclayout_yolo_finetune/<this file>
+#                My_code/step04_detection/03_doclayout_yolo_finetune/<this file>
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "step03_labelbox_export"))
 from step03_labelbox_export_to_dataset import (  # noqa: E402
     build_image_index,

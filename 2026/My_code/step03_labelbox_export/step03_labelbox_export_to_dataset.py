@@ -97,13 +97,10 @@ def flatten_classifications(classifications: list) -> list:
 
 # ── local image index ─────────────────────────────────────────────────────────
 
-def build_image_index(images_root: Path) -> dict:
-    """Map filename -> full path for every image under images_root (recursive)."""
-    index = {}
-    for ext in ("*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG"):
-        for p in images_root.rglob(ext):
-            index[p.name] = p
-    return index
+# Shared with inference and all step-4 dataset consumers.
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from annotation_inputs import build_image_index
 
 
 # ── figure subtype splitting ──────────────────────────────────────────────────
