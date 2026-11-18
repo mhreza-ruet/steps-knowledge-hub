@@ -32,8 +32,34 @@ HUES = {"red": 0, "crimson": 350, "orange": 30, "brown": 25, "gold": 48, "yellow
 ACHROMATIC = ("black", "gray", "grey", "dark gray", "dark grey", "charcoal")
 
 
+def _parse_rgb_text(n):
+    """'#9966cc', '#96c', 'rgb(153, 102, 204)', '(0.6, 0.4, 0.8)' -> (r, g, b) 0..255, else None"""
+    import re as _re
+    m = _re.fullmatch(r"#?([0-9a-f]{6}|[0-9a-f]{3})", n)
+    if m and (n.startswith("#") or len(m.group(1)) == 6 and any(c in "abcdef" for c in m.group(1)) or n.startswith("#")):
+        h = m.group(1)
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+    m = _re.fullmatch(r"(?:rgba?)?\(?\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*[\d.]+)?\s*\)?", n)
+    if m:
+        v = [float(x) for x in m.groups()]
+        if max(v) <= 1.0:
+            v = [x * 255 for x in v]
+        return tuple(int(round(x)) for x in v)
+    return None
+
+
 def colour_target(name):
     n = (name or "").lower().strip()
+    rgb = _parse_rgb_text(n)
+    if rgb is not None:
+        # a colour code (hex / rgb): a hue target when the colour is saturated, else dark / grey
+        mx, mn = max(rgb) / 255.0, min(rgb) / 255.0
+        if mx > 0 and (mx - mn) / mx >= 0.2:
+            h, s_, v = hsv_arrays(np.array([[rgb]], np.uint8))
+            return {"kind": "hue", "hue": float(h[0, 0]), "name": n, "rgb": list(rgb)}
+        return {"kind": "dark", "name": n, "rgb": list(rgb)}
     if any(a == n or n.startswith(a) or n.endswith(a) for a in ACHROMATIC) and not any(h in n for h in ("blue", "green", "red")):
         return {"kind": "dark", "name": n}
     best = None
@@ -258,6 +284,28 @@ def _fill_small_holes(m, max_hole=250):
     return m
 
 
+def joined_by_line(mask, pts, radius=None):
+    """do the markers of a series have a connecting line?  Pixels of the series colour left
+    after removing a disc around every marker: a line leaves long strokes, a scatter leaves
+    (almost) nothing. Returns (bool, share of leftover pixels)."""
+    if not pts or mask.sum() == 0:
+        return False, 0.0
+    H, W = mask.shape
+    if radius is None:
+        dt = ndi.distance_transform_edt(mask)
+        radius = max(2.0, float(np.percentile([dt[int(round(q[1])), int(round(q[0]))] for q in pts], 50)))
+    yy, xx = np.mgrid[:H, :W]
+    near = np.zeros((H, W), bool)
+    for q in pts:
+        x, y = q[0], q[1]
+        r = 1.8 * radius + 1
+        y0, y1, x0, x1 = int(max(0, y - r)), int(min(H, y + r + 1)), int(max(0, x - r)), int(min(W, x + r + 1))
+        near[y0:y1, x0:x1] |= (yy[y0:y1, x0:x1] - y) ** 2 + (xx[y0:y1, x0:x1] - x) ** 2 <= r * r
+    left = mask & ~near
+    share = float(left.sum() / max(mask.sum(), 1))
+    return share >= 0.15 and left.sum() >= 3 * len(pts), share
+
+
 def find_markers(mask):
     """Marker centres from a colour mask that may also contain the series'
     line, error bars, etc. Thin strokes are removed with a distance-transform
@@ -315,6 +363,53 @@ def find_markers(mask):
             hf.append(win_h.sum() / win_f.sum())
     return sorted(pts), {"dt_threshold": t, "typical_core_area": typical, "marker_px": mpx, "marker_r": marker_r,
                          "hole_fraction": float(np.median(hf)) if hf else 0.0}
+
+
+def find_hidden_markers(mask, pts, mpx, min_share=0.3):
+    """Markers partly hidden behind another marker of the same colour: their visible part is a
+    crescent too small to give a marker core, so find_markers misses them. Every found marker
+    explains a disc of the marker size; what is left of the mask (thin lines removed) and is
+    big enough to be part of a marker is a hidden marker. Its centre: the disc of marker size
+    that lies inside the mask (the front marker has the same colour) and covers most of the
+    crescent. Returns [(cx, cy, area)]."""
+    if not pts or mpx < 4:
+        return []
+    H, W = mask.shape
+    R = mpx / 2.0
+    yy, xx = np.mgrid[0:H, 0:W]
+    known = np.zeros_like(mask, bool)
+    for cx, cy, _ in pts:
+        known |= (xx - cx) ** 2 + (yy - cy) ** 2 <= (R + 1.0) ** 2
+    rest = mask & ~known
+    r_open = max(1, int(round(0.3 * R)))
+    st = (np.add.outer(np.arange(-r_open, r_open + 1) ** 2, np.arange(-r_open, r_open + 1) ** 2) <= r_open ** 2)
+    rest = ndi.binary_opening(rest, st)
+    lab, n = ndi.label(rest)
+    out = []
+    disc_area = np.pi * R * R
+    Ri = int(np.ceil(R))
+    oy, ox = np.mgrid[-Ri:Ri + 1, -Ri:Ri + 1]
+    dsk = ox ** 2 + oy ** 2 <= R * R
+    for i in range(1, n + 1):
+        ys, xs = np.where(lab == i)
+        if len(xs) < min_share * disc_area:
+            continue
+        best = None
+        for cy in range(int(ys.min()) - Ri, int(ys.max()) + Ri + 1):
+            for cx in range(int(xs.min()) - Ri, int(xs.max()) + Ri + 1):
+                if cy - Ri < 0 or cx - Ri < 0 or cy + Ri >= H or cx + Ri >= W:
+                    continue
+                win = mask[cy - Ri:cy + Ri + 1, cx - Ri:cx + Ri + 1][dsk]
+                if win.mean() < 0.95:
+                    continue
+                cov = (lab[cy - Ri:cy + Ri + 1, cx - Ri:cx + Ri + 1][dsk] == i).sum()
+                if best is None or cov > best[0]:
+                    best = (cov, cx, cy)
+        if best is not None and best[0] >= 0.6 * len(xs):
+            # not a duplicate of a found marker
+            if min(np.hypot(best[1] - p[0], best[2] - p[1]) for p in pts) >= 0.5 * mpx:
+                out.append((float(best[1]), float(best[2]), float(len(xs))))
+    return out
 
 
 def _merge_near(pts, d):
@@ -631,7 +726,49 @@ def _dispatch(image_path, spec):
     """the extractor for the chart type the VLM reported"""
     from .spec_types import canonical_type
     ct = canonical_type(spec.get("chart_type"))
+    from .spec_types import settle_layout
+    ct, spec, notes = settle_layout(ct, spec)
     img = D.load_rgb(image_path)
+    res = _dispatch_type(ct, image_path, img, spec)
+    if ct in ("line", "scatter_line") and isinstance(res, dict) and not res.get("reject") and _all_staircase(res):
+        # every traced line is a staircase (flat plateaus joined by vertical jumps): a step
+        # histogram the VLM called a line plot - read it as a histogram outline instead
+        from .hist import pipeline_hist
+        hs = dict(spec, chart_type="histogram",
+                  series=[dict(q, style="step") for q in spec.get("series") or []])
+        alt = pipeline_hist(img, hs)
+        if not alt.get("reject") and alt.get("series"):
+            alt["warnings"].insert(0, "the VLM called this a line plot, but every line is a staircase of flat steps - read as a step histogram")
+            res = alt
+    if notes and isinstance(res, dict):
+        res.setdefault("warnings", [])[:0] = notes
+    return res
+
+
+def _all_staircase(res, min_steps=4):
+    """every line series made of flat plateaus joined by (near-)vertical jumps"""
+    ser = [d for d in (res.get("series") or {}).values() if d.get("kind") == "line" and len(d.get("x") or []) >= 10]
+    if not ser:
+        return False
+    for d in ser:
+        x, y = np.asarray(d["x"], float), np.asarray(d["y"], float)
+        o = np.argsort(x); x, y = x[o], y[o]
+        yr = float(np.ptp(y)) or 1.0
+        xr = float(np.ptp(x)) or 1.0
+        flat = np.abs(np.diff(y)) <= 0.01 * yr
+        dx = np.diff(x)
+        plateaus = flat & (dx >= 0.015 * xr)                 # a flat piece with real width
+        plateau_x = float(dx[flat].sum())
+        if plateaus.sum() < min_steps or plateau_x < 0.75 * xr:
+            return False
+        # jumps between plateaus are steep: little x travelled while y changes
+        steep = (~flat) & (np.abs(np.diff(x)) <= 0.01 * xr)
+        if steep.sum() < 0.5 * (~flat).sum():
+            return False
+    return True
+
+
+def _dispatch_type(ct, image_path, img, spec):
     if ct == "pie":
         from .pie import pipeline_pie
         return pipeline_pie(img, spec)

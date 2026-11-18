@@ -78,10 +78,24 @@ class ColorScale:
         self.tree = cKDTree(self.colours)
         self.vmin, self.vmax = float(self.values.min()), float(self.values.max())
 
-    def value(self, rgb, shaded=False):
-        """rgb: (..., 3) -> (values, colour distances)"""
+    def value(self, rgb, shaded=False, faded=False):
+        """rgb: (..., 3) -> (values, colour distances).
+        shaded: the colour may be darkened / lightened by lighting (a multiple of a table colour).
+        faded: the colour may be blended with the white page (transparency, e.g. matplotlib's
+        depth shading of 3-D markers): p = a C + (1 - a) 255 with a in [0.3, 1]."""
         rgb = np.asarray(rgb, float)
         flat = rgb.reshape(-1, 3)
+        if faded:
+            C = 255.0 - self.colours
+            cc = (C ** 2).sum(1) + 1e-9
+            best_v = np.empty(len(flat)); best_d = np.empty(len(flat))
+            for a0 in range(0, len(flat), 4096):
+                Pw = 255.0 - flat[a0:a0 + 4096]
+                a = np.clip((Pw @ C.T) / cc, 0.3, 1.0)
+                d = np.sqrt(((Pw[:, None, :] - a[..., None] * C[None]) ** 2).sum(-1))
+                j = d.argmin(1)
+                best_v[a0:a0 + 4096] = self.values[j]; best_d[a0:a0 + 4096] = d[np.arange(len(Pw)), j]
+            return best_v.reshape(rgb.shape[:-1]), best_d.reshape(rgb.shape[:-1])
         if not shaded:
             d, k = self.tree.query(flat)
             return self.values[k].reshape(rgb.shape[:-1]), d.reshape(rgb.shape[:-1])
@@ -168,6 +182,13 @@ def read_colorbar(img, cb_spec, exclude_box=None):
         vals2 = np.array([vals[a:b].mean() for a, b in long_runs])
         edges = sorted([float(vals[a]) for a, b in long_runs] + [float(vals[long_runs[-1][1] - 1])])
         cols, vals = cols2, vals2
+    if c["orient"] == "vertical":
+        ends = [float(mp.to_value(float(y1 - 1))), float(mp.to_value(float(y0)))]
+    else:
+        ends = [float(mp.to_value(float(x0))), float(mp.to_value(float(x1 - 1)))]
+    info["ends"] = ends                                 # value at the low / high end of the drawn bar
+    info["tick_labels"] = [str(t) for t in labels]
+    info["order_reversed"] = inf.get("order_reversed")
     info.update(found=True, box=c["box"], orient=c["orient"], label_side=side, rms_px=float(inf.get("rms_px", 0)),
                 n_labels_found=len(words), n_labels_read=len(labels), stepped=bool(stepped),
                 levels=(edges if stepped else None), value_range=[float(np.min(vals)), float(np.max(vals))],

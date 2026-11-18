@@ -82,6 +82,91 @@ def _segments(top, gap_px, jump_px=1.5):
     return [(a, b) for a, b in segs if b - a >= 2]
 
 
+def _edge_colour(img, top, segs, fill, base_px):
+    """the line drawn between neighbouring bars (black, white, ...) or None"""
+    cols = []
+    for (a, b), (c, d) in zip(segs, segs[1:]):
+        if abs(c - b) > 4:
+            continue
+        x = int(round(0.5 * (b + c)))
+        t = np.nanmax([top[a:b].mean() if b > a else np.nan, top[c:d].mean() if d > c else np.nan])
+        r0, r1 = int(t) + 3, int(base_px) - 3
+        if r1 - r0 < 4:
+            continue
+        win = img[r0:r1, max(0, x - 2):x + 3].astype(float)        # rows x 5 columns
+        dev = np.abs(win - fill).max(-1).mean(0)
+        k = int(np.argmax(dev))
+        if dev[k] > 40:
+            cols.append(np.median(win[:, k], 0))
+    if len(cols) < 2:
+        return None
+    return np.median(cols, 0).round(1).tolist()
+
+
+def _outline_width(img, top, ref):
+    """thickness of a step outline (pixels of the series colour below the plateau top)"""
+    d = np.sqrt(((img.astype(float) - ref) ** 2).sum(-1)) <= 60
+    th = []
+    for x in np.where(~np.isnan(top))[0][::3]:
+        t = int(top[x]); n = 0
+        while t + n < img.shape[0] and d[t + n, x]:
+            n += 1
+        if 0 < n <= 8:
+            th.append(n)
+    return float(np.median(th)) if th else None
+
+
+def _overlay_curves(img, area, refs, blends, X, Y, frame):
+    """thin curves drawn over the bars (fitted density, cumulative line): a saturated or dark
+    colour that is neither a series colour nor an overlap colour, forming a thin line"""
+    from .detect import _runs
+    pix = img[area].astype(float)
+    known = [np.asarray(r, float) for r in refs] + [np.asarray(b["rgb"], float) for b in blends]
+    sat = pix.max(-1) - pix.min(-1)
+    cand = (sat > 60) | (pix.mean(-1) < 90)
+    for k in known:
+        cand &= np.abs(pix - k).max(-1) > 45
+    if cand.sum() < 0.25 * (frame["right"] - frame["left"]):
+        return []
+    q = (pix[cand] // 24).astype(int)
+    keys, cnt = np.unique(q[:, 0] * 10000 + q[:, 1] * 100 + q[:, 2], return_counts=True)
+    out = []
+    for key in keys[np.argsort(-cnt)][:3]:
+        c = np.array([key // 10000, (key // 100) % 100, key % 100]) * 24 + 12.0
+        m = area & (np.abs(img.astype(float) - c).max(-1) <= 40)
+        for kc in known:
+            m &= np.abs(img.astype(float) - kc).max(-1) > 45
+        if any(np.abs(c - o["rgb_q"]).max() < 30 for o in out):
+            continue
+        colsum = m.sum(0)
+        xs = np.where((colsum > 0) & (colsum <= 8))[0]          # thin: few pixels per column
+        if len(xs) < 0.3 * (frame["right"] - frame["left"]):
+            continue
+        ys = np.array([np.where(m[:, x])[0].mean() for x in xs])
+        runs = _runs(np.isin(np.arange(img.shape[1]), xs))
+        if max((b - a for a, b in runs), default=0) < 0.2 * (frame["right"] - frame["left"]):
+            continue
+        rgb = np.median(img[m].astype(float), 0)
+        out.append({"rgb": rgb.round(1).tolist(), "rgb_q": c, "x": X.to_value(xs.astype(float)).round(6).tolist(),
+                    "y": Y.to_value(ys).round(6).tolist(), "width_px": float(np.median(colsum[xs]))})
+    for o in out:
+        o.pop("rgb_q")
+    return out
+
+
+def _legend_box(boxes, frame):
+    """where the legend sits (for the redraw): a matplotlib 'loc' word"""
+    if not boxes:
+        return None
+    b = max(boxes, key=lambda q: (q[2] - q[0]) * (q[3] - q[1]))
+    cx, cy = 0.5 * (b[0] + b[2]), 0.5 * (b[1] + b[3])
+    fx = (cx - frame["left"]) / max(1, frame["right"] - frame["left"])
+    fy = (cy - frame["top"]) / max(1, frame["bottom"] - frame["top"])
+    v = "upper" if fy < 0.4 else ("lower" if fy > 0.6 else "center")
+    h = "left" if fx < 0.4 else ("right" if fx > 0.6 else "center")
+    return {"loc": "center" if v == h == "center" else (f"{v} {h}" if not (v == "center" and h == "center") else "center"), "box": list(map(float, b))}
+
+
 def pipeline_hist(img, spec):
     H, W = img.shape[:2]
     frame = D.detect_frame(img)
@@ -111,6 +196,7 @@ def pipeline_hist(img, spec):
     cols = _quant_colours(img, area)
     base_px = float(Y.to_pixel(0.0)) if Y.to_value(frame["bottom"]) <= 0 <= Y.to_value(frame["top"]) else float(frame["bottom"])
     tops = {}
+    blends = []
     for i, ((ref, src), s) in enumerate(zip(refs, series)):
         if ref is None:
             out["warnings"].append(f"colour '{s.get('color')}' of '{s['name']}' not found"); continue
@@ -125,8 +211,12 @@ def pipeline_hist(img, spec):
                 for j, (r2, _) in enumerate(refs):
                     if j == i or r2 is None:
                         continue
-                    if _blend_of(c, r2, ref) is not None or _blend_of(c, ref, r2) is not None:
+                    k_top = _blend_of(c, r2, ref)          # this series drawn over series j
+                    k_und = _blend_of(c, ref, r2)          # series j drawn over this one
+                    if k_top is not None or k_und is not None:
                         m |= (np.abs(img.astype(float) - c).max(-1) <= 9) & area
+                        blends.append({"top": i if k_top is not None else j, "under": j if k_top is not None else i,
+                                       "k": k_top if k_top is not None else k_und, "rgb": c.tolist(), "pixels": n})
         m = ndi.binary_opening(m, np.ones((2, 2))) if style != "step" else m
         lab, n = ndi.label(m)
         if n == 0:
@@ -187,6 +277,24 @@ def pipeline_hist(img, spec):
         out["series"][name] = {"left": left.round(6).tolist(), "right": right.round(6).tolist(), "height": hv.round(6).tolist(),
                                "kind": "histogram", "style": style, "rgb": ref.tolist(), "from": src}
     out["bin_width_px"] = w0
+    # drawing style, measured: transparency (from overlap colours), bar edge colour, outline width
+    names = [s["name"] for s in series]
+    if blends:
+        kk = float(np.median([b["k"] for b in blends]))
+        alpha = float(np.clip(1 - kk, 0.1, 1.0))
+        order = sorted({b["under"] for b in blends}) + sorted({b["top"] for b in blends} - {b["under"] for b in blends})
+        out["transparency"] = {"alpha": round(alpha, 3), "draw_order": [names[i] for i in order if i < len(names)],
+                               "overlap_rgb": blends[0]["rgb"]}
+    for name, (top, style, ref, src) in tops.items():
+        if name in out["series"]:
+            e = _edge_colour(img, top, segs_all[name], ref, base_px) if style != "step" else None
+            known = [r for r, _ in refs if r is not None] + [np.asarray(b["rgb"]) for b in blends]
+            if e is not None and any(np.abs(np.asarray(e) - k).max() <= 35 for k in known):
+                e = None                                   # that is another series / an overlap, not an edge line
+            out["series"][name]["edge_rgb"] = e
+            out["series"][name]["line_px"] = _outline_width(img, top, ref) if style == "step" else None
+    out["overlay_lines"] = _overlay_curves(img, area, [r for r, _ in refs if r is not None], blends, X, Y, frame)
+    out["legend_box"] = _legend_box(boxes, frame)
     out["table"] = [{"series": n, "bin_left": l, "bin_right": r, "height": h}
                     for n, d in out["series"].items() for l, r, h in zip(d["left"], d["right"], d["height"])]
     rms = max(cal_info["x_axis"].get("rms_px", 0), cal_info["y_axis"].get("rms_px", 0))

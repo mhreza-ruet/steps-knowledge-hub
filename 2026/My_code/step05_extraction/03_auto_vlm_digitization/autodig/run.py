@@ -16,8 +16,10 @@ import json
 import time
 from pathlib import Path
 
+import sys as _sys
 import matplotlib
-matplotlib.use("Agg")
+if "ipykernel" not in _sys.modules:      # scripts: no screen needed. In a notebook keep its inline backend,
+    matplotlib.use("Agg")                # otherwise plt.show() there would display nothing
 import matplotlib.pyplot as plt
 from PIL import Image
 
@@ -84,14 +86,37 @@ def read_spec(image, reader, cache_path, use_cache=True, check=True):
     return d
 
 
-def side_by_side(orig, rec, out, title=""):
+def side_by_side(orig, rec, out, title="", height=900, gap=24, pad=12):
+    """original | recreated, composed at pixel level (no figure margins): both images scaled to the
+    same height (default 900 px, never shrunk below their own size), a thin gap between them, a
+    title line above each and an optional caption on top. The two plots fill the canvas."""
+    from PIL import ImageDraw, ImageFont
     a, b = Image.open(orig).convert("RGB"), Image.open(rec).convert("RGB")
-    fig, ax = plt.subplots(1, 2, figsize=(12, 5.2 * max(a.height / a.width, b.height / b.width)))
-    for x, im, t in zip(ax, (a, b), ("Original", "Recreated from extracted data")):
-        x.imshow(im); x.set_title(t, fontsize=12, fontweight="bold"); x.axis("off")
+    h = max(height, a.height, b.height)
+    a = a.resize((round(a.width * h / a.height), h), Image.LANCZOS)
+    b = b.resize((round(b.width * h / b.height), h), Image.LANCZOS)
+
+    def font(size, bold=False):
+        try:
+            from matplotlib import font_manager
+            return ImageFont.truetype(font_manager.findfont(font_manager.FontProperties(weight="bold" if bold else "normal")), size)
+        except Exception:
+            return ImageFont.load_default()
+    f_head, f_cap = font(max(20, h // 32), True), font(max(18, h // 38))
+    head = f_head.size + 2 * pad
+    cap = (f_cap.size + 2 * pad) if title else 0
+    W = a.width + gap + b.width + 2 * pad
+    H = cap + head + h + pad
+    canvas = Image.new("RGB", (W, H), "white")
+    d = ImageDraw.Draw(canvas)
     if title:
-        fig.suptitle(title, fontsize=11)
-    fig.tight_layout(); fig.savefig(out, dpi=120); plt.close(fig)
+        d.text((W / 2, pad + f_cap.size / 2), title, fill=(0, 0, 0), font=f_cap, anchor="mm")
+    xa, xb = pad, pad + a.width + gap
+    for x0, im, t in ((xa, a, "Original"), (xb, b, "Recreated from extracted data")):
+        d.text((x0 + im.width / 2, cap + pad + f_head.size / 2), t, fill=(0, 0, 0), font=f_head, anchor="mm")
+        canvas.paste(im, (x0, cap + head))
+    d.line([(xb - gap / 2, cap + head), (xb - gap / 2, H - pad)], fill=(225, 225, 225), width=2)
+    canvas.save(out)
     return out
 
 

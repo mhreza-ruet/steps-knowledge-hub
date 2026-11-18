@@ -16,6 +16,8 @@ same code reads both orientations.
 """
 from __future__ import annotations
 
+import re
+
 import numpy as np
 from scipy import ndimage as ndi
 
@@ -77,6 +79,7 @@ def analyse_glyph(gm, img_t, vmap):
         if r - l >= 3:
             inner.append((rows[k], img_t[rows[k], l:r + 1].astype(float)))
     med_r = None
+    med_rows = []
     if inner:
         F = np.median(np.concatenate([p for _, p in inner]), 0)
         dev = np.array([np.mean(np.abs(p - F).max(1) > 40) for _, p in inner])
@@ -86,25 +89,118 @@ def analyse_glyph(gm, img_t, vmap):
             grp = np.split(best, np.where(np.diff(best) > 1)[0] + 1)
             g = max(grp, key=len)
             med_r = float(np.mean([inner[i][0] for i in g]))
+            med_rows = [inner[i][0] for i in g]
         fill = F
     else:
         fill = None
     st = {"px": {"top": float(top_r), "q_hi": float(top_r), "q_lo": float(bot_r), "bottom": float(y1), "whisk_top": float(y0),
                  "median": med_r, "x_centre": float(0.5 * (L.min() + right[a:b].max())), "width": float(maxw)},
           "fill_rgb": None if fill is None else fill.round(1).tolist(), "straight_edges": straight}
+    st["style"] = _glyph_style(gm, img_t, rows, left, right, a, b, mode, fill, inner, med_r)
     v = lambda p: float(vmap(p))
     vals = sorted([v(top_r), v(bot_r)])
     wh = sorted([v(y0), v(y1)])
     st.update(q1=vals[0], q3=vals[1], whislo=wh[0], whishi=wh[1], median=(v(med_r) if med_r is not None else None))
+    st["style"]["median_lw_px"] = len(med_rows) if med_rows else None
+    if st["style"].get("mean_px") is not None:
+        st["mean"] = v(st["style"]["mean_px"])
     return st, None
+
+
+def _glyph_style(gm, img_t, rows, left, right, a, b, mode, fill, inner, med_r):
+    """how the box is drawn - measured, so the recreated plot can look the same:
+    edge colour, median-line colour, notch, a mean marker inside the box"""
+    sty = {}
+    # edge colour: the box's left side column over the box rows
+    ed = np.array([img_t[rows[k], max(0, left[k] + d)] for k in range(a, b) if left[k] >= 0 for d in (0, 1)], float)
+    if len(ed):                                   # the stroke's core: darkest half (anti-aliasing greys the rest)
+        ed = ed[ed.mean(1) <= np.median(ed.mean(1))]
+    sty["edge_rgb"] = np.median(ed, 0).round(1).tolist() if len(ed) else [0, 0, 0]
+    # notch: the left side moves inwards around the median and back out
+    L = left[a:b].astype(float)
+    ind = L - mode
+    sty["notch"] = bool(ind.max() >= max(3, 0.12 * (right[a:b] - left[a:b]).max()) and np.mean(ind <= 1) >= 0.25)
+    if med_r is not None and fill is not None:
+        k = int(round(med_r))
+        if 0 <= k < img_t.shape[0]:
+            kk = int(np.argmin(np.abs(rows - k)))
+            l, r = left[kk] + 2, right[kk] - 2
+            if r > l:
+                px = img_t[k, l:r + 1].astype(float)
+                dev = np.abs(px - fill).max(1) > 40
+                if dev.any():
+                    sty["median_rgb"] = np.median(px[dev], 0).round(1).tolist()
+    # mean marker: a compact blob inside the box that is neither fill, edge nor median line
+    if fill is not None and len(inner):
+        H_, W_ = img_t.shape[:2]
+        blob = np.zeros((H_, W_), bool)
+        others = [np.asarray(c, float) for c in (sty.get("median_rgb"), sty.get("edge_rgb")) if c is not None]
+        for rr, p in inner:
+            kk = int(np.argmin(np.abs(rows - rr)))
+            l = left[kk] + 2
+            d = np.abs(p - fill).max(1) > 60                 # not the fill ...
+            for c in others:                                  # ... nor the median line / edge colour
+                d &= np.abs(p - c).max(1) > 60
+            if med_r is not None and abs(rr - med_r) <= 3 and not others:
+                d[:] = False
+            blob[rr, l:l + len(p)] = d
+        lab, n = ndi.label(blob)
+        if n:
+            sizes = ndi.sum(blob, lab, range(1, n + 1))
+            j = int(np.argmax(sizes)) + 1
+            if sizes[j - 1] >= 8:
+                ys, xs = np.where(lab == j)
+                hh, ww = np.ptp(ys) + 1, np.ptp(xs) + 1
+                if 0.4 <= hh / ww <= 2.5 and ww <= 0.6 * (right[a:b] - left[a:b]).max():
+                    sty["mean_px"] = float(ys.mean())
+                    sty["mean_rgb"] = np.median(img_t[ys, xs].astype(float), 0).round(1).tolist()
+                    # triangle: width grows from top to bottom; else a circle / square
+                    top_w = (ys <= ys.min() + hh / 3).sum(); bot_w = (ys >= ys.max() - hh / 3).sum()
+                    sty["mean_marker"] = "^" if bot_w > 1.6 * top_w else ("v" if top_w > 1.6 * bot_w else "o")
+    return sty
+
+
+def _flier_style(mask, img_t):
+    """marker of an outlier: hollow circle / filled circle / cross"""
+    ys, xs = np.where(mask)
+    cy, cx = int(round(ys.mean())), int(round(xs.mean()))
+    hh, ww = np.ptp(ys) + 1, np.ptp(xs) + 1
+    fillr = len(ys) / float(hh * ww)
+    centre = mask[max(0, cy - 1):cy + 2, max(0, cx - 1):cx + 2].any()
+    px = img_t[ys, xs].astype(float)
+    dark = px.mean(1) <= np.percentile(px.mean(1), 35)      # thin strokes: the core, not the anti-aliased rim
+    rgb = np.median(px[dark], 0).round(1).tolist()
+    if not centre:
+        mk, filled = "o", False
+    elif fillr >= 0.6:
+        mk, filled = ("s" if fillr >= 0.85 else "o"), True
+    else:
+        # a cross has its ink on the diagonals, a plus on the centre row / column
+        diag = sum(mask[min(max(ys.min() + d, 0), mask.shape[0] - 1), min(xs.min() + d, mask.shape[1] - 1)] for d in range(min(hh, ww)))
+        mk, filled = ("x" if diag >= 0.5 * min(hh, ww) else "+"), True
+    return {"marker": mk, "filled": filled, "rgb": rgb, "size_px": float(max(hh, ww))}
+
+
+def _value_axis(spec):
+    from .spec_types import value_axis
+    return value_axis(spec)
+
+
+def _has_value_grid(img, area, vkey):
+    """light lines across the whole plot, perpendicular to the value axis"""
+    g = img.mean(-1)
+    light = area & (g < 245) & (g > 150)
+    frac = light.mean(1) if vkey == "y_axis" else light.mean(0)
+    span = area.mean(1) if vkey == "y_axis" else area.mean(0)
+    k = (span > 0) & (frac >= 0.6 * np.maximum(span, 1e-9))
+    return int(D._runs(k).__len__()) >= 3 if hasattr(D, "_runs") else k.sum() >= 3
 
 
 def pipeline_box(img, spec):
     H, W = img.shape[:2]
     frame = D.detect_frame(img)
     cal, cal_info = calibrate_all(img, frame, spec)
-    orient = str(spec.get("orientation") or "vertical").lower()
-    vkey = "x_axis" if orient.startswith("h") else "y_axis"
+    vkey = _value_axis(spec)
     out = {"chart_type": "box", "orientation": "horizontal" if vkey == "x_axis" else "vertical", "size": (W, H), "frame": frame,
            "spec": spec, "warnings": [], "checks": [], "series": {},
            "calibration": {k: [m.as_dict() for m in v] for k, v in cal.items()},
@@ -165,11 +261,22 @@ def pipeline_box(img, spec):
         best = min(stats, key=lambda s: abs(s["px"]["x_centre"] - cx))
         if abs(best["px"]["x_centre"] - cx) > 0.6 * best["px"]["width"]:
             continue
+        if k == 1 or True:
+            fs_ = _flier_style(lab == i, img_t) if k == 1 else None
+            if fs_:
+                best.setdefault("flier_styles", []).append(fs_)
         for j in range(k):
             cy = ys.min() + (j + 0.5) * hh / k - 0.5
             if not (best["px"]["whisk_top"] - 2 <= cy <= best["px"]["bottom"] + 2):
                 best.setdefault("fliers", []).append(float(VM.to_value(cy)))
     ns = len(series)
+    if ns > 1 and not legend and cats and len(stats) == len(cats):
+        # no legend and one box per category: the VLM listed each box colour as a 'series';
+        # it is one series whose boxes are coloured individually
+        out["warnings"].append(f"VLM listed {ns} series but there is no legend and one box per category - read as one series with per-box colours")
+        base = re.sub(r"\s*#\d+$", "", series[0]["name"]).strip() or series[0]["name"]
+        series = [dict(series[0], name=base, color="per box")]
+        ns = 1
     expect = len(cats) * ns if cats else len(stats)
     if cats and len(stats) != expect:
         out["warnings"].append(f"VLM: {len(cats)} categories x {ns} series = {expect} boxes, pixels found {len(stats)}")
@@ -197,8 +304,40 @@ def pipeline_box(img, spec):
                 continue
             rec = out["series"][series[k]["name"]]
             rec["categories"].append(cats[ci])
-            rec["stats"].append({q: s.get(q) for q in ("q1", "median", "q3", "whislo", "whishi")} | {"fliers": sorted(s.get("fliers", []))})
+            rec["stats"].append({q: s.get(q) for q in ("q1", "median", "q3", "whislo", "whishi")} | {"fliers": sorted(s.get("fliers", []))}
+                                | ({"mean": s["mean"]} if s.get("mean") is not None else {}))
+            rec.setdefault("_glyph", []).append(s)
     out["glyphs"] = stats
+    # category positions in pixels -> category index (for box positions and widths)
+    gc = [float(np.mean(g)) for g in groups]
+    if len(gc) >= 2:
+        sl, ic = np.polyfit(gc, np.arange(len(gc)), 1)
+    else:
+        sl, ic = 1.0 / max(stats[0]["px"]["width"] * 2, 1), -gc[0] / max(stats[0]["px"]["width"] * 2, 1)
+    for s in stats:
+        s["pos"] = float(sl * s["px"]["x_centre"] + ic)
+        s["width_units"] = float(abs(sl) * s["px"]["width"])
+    ext = (frame["left"], frame["right"]) if vkey == "x_axis" else (frame["bottom"], frame["top"])
+    out["value_limits"] = sorted([float(VM.to_value(ext[0])), float(VM.to_value(ext[1]))])
+    cext = (frame["top"], frame["bottom"]) if vkey == "x_axis" else (frame["left"], frame["right"])
+    out["category_limits"] = sorted([float(sl * cext[0] + ic), float(sl * cext[1] + ic)])
+    # image rows grow downwards, a matplotlib y axis upwards
+    out["category_axis_reversed"] = bool(sl > 0) if vkey == "x_axis" else bool(sl < 0)
+    out["grid"] = bool(_has_value_grid(img, area, vkey))
+    # outlier marker: one style per series (stacked, touching markers cannot be read alone)
+    for rec in out["series"].values():
+        fl = [f for g_ in rec.get("_glyph", []) for f in g_.get("flier_styles", [])]
+        if fl:
+            from collections import Counter
+            mk = Counter((f["marker"], f["filled"]) for f in fl).most_common(1)[0][0]
+            pick = [f for f in fl if (f["marker"], f["filled"]) == mk]
+            common = {"marker": mk[0], "filled": mk[1], "rgb": np.median([f["rgb"] for f in pick], 0).round(1).tolist()}
+            for g_ in rec.get("_glyph", []):
+                g_["flier_styles"] = [common]
+    for rec in out["series"].values():
+        gl = rec.pop("_glyph", [])
+        rec["draw"] = [{"pos": g_["pos"], "width": g_["width_units"], "fill_rgb": g_["fill_rgb"], **g_["style"],
+                        "flier": (g_.get("flier_styles") or [None])[0]} for g_ in gl]
     out["table"] = [{"series": n, "category": c, **{k: v for k, v in st.items() if k != "fliers"},
                      "fliers": ";".join(f"{f:.6g}" for f in st["fliers"])}
                     for n, d in out["series"].items() for c, st in zip(d["categories"], d["stats"])]

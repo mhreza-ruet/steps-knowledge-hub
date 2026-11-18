@@ -414,7 +414,7 @@ class _VLMReader:
 class QwenSpecReader(_VLMReader):
     """Local model: Qwen3-VL (default 4B) on the Mac (MPS) / GPU. Loads once, reuse for many images."""
 
-    def __init__(self, model_id="Qwen/Qwen3-VL-4B-Instruct", max_new_tokens=1024, upscale_below=1000):
+    def __init__(self, model_id="Qwen/Qwen3-VL-4B-Instruct", max_new_tokens=2048, upscale_below=1000):
         """upscale_below: images whose longer side is smaller than this are enlarged
         (LANCZOS) before the VLM sees them - small tick labels read better. The spec
         holds no pixel positions, so resizing for the VLM changes nothing downstream."""

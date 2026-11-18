@@ -86,8 +86,14 @@ def pipeline_stacked(img, spec):
             d_own = np.sqrt(((img.astype(float) - np.array(ref, float)) ** 2).sum(-1))
             d_oth = np.min([np.sqrt(((img.astype(float) - o) ** 2).sum(-1)) for o in others], 0)
             m &= d_own <= d_oth
+        # the same colour without the legend cut-out: a bar that runs up to (or under) the legend
+        # box was clipped by the exclusion padding - its end is followed in the full image
+        mfull = fill_mask(img, ref, hue, sat, val) & plot_region(frame, (H, W), inset=1)
+        if others:
+            mfull &= d_own <= d_oth
+        excl_t = ~area & plot_region(frame, (H, W), inset=1)
         if horiz:
-            m = m.T
+            m, mfull, excl_t = m.T, mfull.T, excl_t.T
         colcnt = m.sum(0)
         found = []
         for a, b in D._runs(colcnt >= 3):
@@ -103,10 +109,25 @@ def pipeline_stacked(img, spec):
                 continue
             t, bt = float(np.median(tops)), float(np.median(bots))
             cc = int(0.5 * (a + b))
+            hidden = False
+            for direction in (-1, +1):
+                p0 = int(t) if direction < 0 else int(bt)
+                if not excl_t[max(0, min(p0 + 3 * direction, excl_t.shape[0] - 1)), cc]:
+                    continue                                   # this end is not next to an excluded box
+                p = p0
+                while 0 <= p + direction < mfull.shape[0] and mfull[p + direction, cc]:
+                    p += direction
+                if direction < 0:
+                    t = float(p)
+                else:
+                    bt = float(p)
+                nxt = p + 2 * direction
+                hidden |= bool(0 <= nxt < excl_t.shape[0] and excl_t[nxt, cc] and not mfull[nxt, cc]
+                               and gray_t[nxt, cc] > 200)
             du = _dark_run(gray_t[:, cc], int(t) - 1, -1)
             dd = _dark_run(gray_t[:, cc], int(bt) + 1, +1)
             e_lo, e_hi = t - 0.5 - du / 2.0, bt + 0.5 + dd / 2.0       # pixel ends of the segment
-            found.append({"centre": 0.5 * (a + b - 1), "width": b - a, "ends_px": (e_lo, e_hi)})
+            found.append({"centre": 0.5 * (a + b - 1), "width": b - a, "ends_px": (e_lo, e_hi), "touches_legend": hidden})
         segs[s["name"]] = found
         out.setdefault("styles", {})[s["name"]] = {"rgb": list(map(float, ref)), "from": src}
     allc = sorted(f["centre"] for v in segs.values() for f in v)
@@ -136,6 +157,9 @@ def pipeline_stacked(img, spec):
                 ref_px = base if base is not None else (frame["left"] if horiz else frame["bottom"])
                 far = a if abs(a - ref_px) > abs(b - ref_px) else b
                 v = float(VM.to_value(far))
+            if f.get("touches_legend"):
+                out["warnings"].append(f"'{s['name']}' / {cats[ci] if ci < len(cats) else ci + 1}: the bar ends at the legend box - "
+                                       f"it may continue underneath (value {v:.4g} is then a lower bound)")
             cs.append(cats[ci] if ci < len(cats) else f"category {ci + 1}"); vs.append(round(v, 6)); px.append([round(a, 1), round(b, 1), round(f["centre"], 1)])
         out["series"][s["name"]] = {"categories": cs, "values": vs, "px": px, "kind": "bar"}
         miss = [c for c in cats if c not in cs]

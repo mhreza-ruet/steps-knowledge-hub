@@ -90,7 +90,7 @@ def _width_mismatch(strings, widths):
     """How badly label lengths (characters) disagree with blob widths (pixels).
     Breaks the tie when evenly spaced labels can be aligned at several offsets
     ('0' is narrower than '30')."""
-    n = np.array([max(1, len(re.sub(r"[^0-9.\-]", "", str(s))) or len(str(s))) for s in strings], float)
+    n = np.array([max(1, len(re.sub(r"[^0-9.\-\u2212]", "", str(s))) or len(str(s))) for s in strings], float)
     w = np.asarray(widths, float)
     if len(n) < 2 or w.min() <= 0 or np.ptp(n) == 0:
         return 0.0
@@ -128,9 +128,17 @@ def calibrate_axis(values, label_pos, tick_pos=None, scale="linear", broken=Fals
     if scale == "log":
         logs = [True]
     best = None
+    reversed_ = False
     # align the shorter list inside the longer one (contiguous), allow up to 3 extra on either side
     nv, nb = len(vals), len(pos)
-    for log in logs:
+    # the VLM may list the labels in the opposite direction (e.g. a colour bar read top -> bottom).
+    # The reversed order is tried too; only the label widths can tell them apart ('-0.5' is wider
+    # than '0.5', '0' narrower than '50'), so it must win clearly on widths to be used.
+    orders = [(vals, strs, 0.0)]
+    if label_widths is not None and len(vals) >= 3:
+        orders.append((vals[::-1], strs[::-1], 0.15 * spacing))
+    vals0, strs0 = vals, strs
+    for (vals, strs, pen), log in [(o, lg) for o in orders for lg in logs]:
         if log and min(vals) <= 0:
             continue
         cands = []
@@ -157,14 +165,18 @@ def calibrate_axis(values, label_pos, tick_pos=None, scale="linear", broken=Fals
             if ab is None:
                 continue
             # evenly spaced labels fit equally well at any offset -> label widths decide
-            key = rms + 0.25 * spacing * _width_mismatch(st, w) if label_widths is not None else rms
+            key = (rms + 0.25 * spacing * _width_mismatch(st, w) if label_widths is not None else rms) + pen
             if best is None or key < best[5]:
                 best = (rms, ab, log, v, ps, key)
+                reversed_ = pen > 0
     if best is None:
         info["method"] = "alignment failed"
         return None, info
     rms, ab, log, v, ps, _ = best
+    vals, strs = vals0, strs0
     info.update(rms_px=rms, log=log, pairs=list(zip(map(float, v), map(float, ps))), method="single fit")
+    if reversed_:
+        info["order_reversed"] = "the VLM listed these labels in the opposite direction; label widths in the pixels decide"
     if (broken or rms > max(2.0, 0.02 * spacing * len(v))) and len(v) >= 5:
         seg = _two_segments(v, ps, log)
         if seg is not None and (broken or seg[0] < 0.5 * rms):

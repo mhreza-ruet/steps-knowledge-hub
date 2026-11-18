@@ -113,7 +113,8 @@ def pie_fill(img, res):
 
 def assess(img, spec, res):
     """-> (status, reasons, checks)"""
-    ct = canonical_type(spec.get("chart_type"))
+    # the reader that produced the result decides (the VLM's type may have been corrected)
+    ct = canonical_type(res.get("chart_type") or spec.get("chart_type"))
     reasons = []
     if ct not in SUPPORTED:
         return "rejected", [f"unsupported chart type ({spec.get('vlm_chart_type') or spec.get('chart_type')})"], []

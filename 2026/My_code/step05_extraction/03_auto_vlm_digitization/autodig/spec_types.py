@@ -51,6 +51,7 @@ Return ONLY this JSON object:
 {"rows": ["<row labels on the left, top to bottom, exactly as printed; [] if that axis is numeric>"],
  "columns": ["<column labels under (or above) the grid, left to right; [] if that axis is numeric>"],
  "annotated": true if numbers are printed inside the cells, else false,
+ "cell_values": if numbers are printed inside the cells: [["<the number printed in each cell of the first (top) row, left to right, exactly as printed>"], ... one list per row, top to bottom]; else [],
  "colorbar": {"title": "<colour bar title or empty>", "tick_labels": ["<every number printed on the colour bar, from the low end to the high end>"],
               "orientation": "vertical" or "horizontal"}}
 Copy every label exactly as printed."""
@@ -167,6 +168,8 @@ def normalize_new(ct, axes, ans, norm_marker):
         spec["rows"] = [str(x) for x in a.get("rows") or []]
         spec["columns"] = [str(x) for x in a.get("columns") or []]
         spec["annotated"] = bool(a.get("annotated", False))
+        cv = a.get("cell_values") or []
+        spec["cell_values"] = [[str(x) for x in r] for r in cv if isinstance(r, (list, tuple))] if isinstance(cv, list) else []
         if not spec["rows"] and not spec["columns"] and spec["x_axis"]["tick_labels"]:
             spec["chart_type"] = "contour"          # numeric axes: a colour map, not a labelled grid
     if ct in ("box", "stacked_bar", "bar"):
@@ -180,3 +183,50 @@ def normalize_new(ct, axes, ans, norm_marker):
         spec["radial_labels"] = [str(x) for x in a.get("radial_labels") or []]
     spec["series"] = _series_list(a.get("series"), vt, norm_marker)
     return spec
+
+
+def numeric_share(labels):
+    from .calibrate import parse_number
+    t = [x for x in labels or [] if str(x).strip()]
+    return (sum(parse_number(x) is not None for x in t) / len(t)) if t else 0.0
+
+
+def value_axis(spec):
+    """which axis carries the numbers (bars / boxes): the tick labels decide - numeric labels on
+    one axis and names on the other; the VLM's 'orientation' word only breaks a tie"""
+    sx = numeric_share((spec.get("x_axis") or {}).get("tick_labels"))
+    sy = numeric_share((spec.get("y_axis") or {}).get("tick_labels"))
+    if sx >= 0.8 and sy < 0.5:
+        return "x_axis"
+    if sy >= 0.8 and sx < 0.5:
+        return "y_axis"
+    return "x_axis" if str(spec.get("orientation") or "vertical").lower().startswith("h") else "y_axis"
+
+
+def settle_layout(ct, spec):
+    """cross-checks of the VLM's description against its own tick labels (no pixels needed):
+    - bars / boxes: orientation from which axis is numeric
+    - a 'heatmap' whose x and y tick labels are both numbers and which has no real row /
+      column names is a continuous colour map (field)"""
+    spec = dict(spec)
+    notes = []
+    if ct in ("bar", "stacked_bar", "box"):
+        o = "horizontal" if value_axis(spec) == "x_axis" else "vertical"
+        if spec.get("orientation") and str(spec.get("orientation")) != o:
+            notes.append(f"orientation set to {o}: the numeric tick labels are on the {'x' if o == 'horizontal' else 'y'} axis")
+        spec["orientation"] = o
+        if not (ct == "bar" and o == "vertical"):      # vertical plain bars keep the xy-reader's category records
+            cats = [str(c.get("name") if isinstance(c, dict) else c) for c in spec.get("categories") or []]
+            if not cats:
+                cats = list(((spec.get("y_axis") if o == "horizontal" else spec.get("x_axis")) or {}).get("tick_labels") or [])
+            spec["categories"] = cats
+    if ct == "heatmap":
+        titles = {str((spec.get(k) or {}).get("title") or "").strip().lower() for k in ("x_axis", "y_axis")}
+        names = [r for r in list(spec.get("rows") or []) + list(spec.get("columns") or []) if str(r).strip().lower() not in titles]
+        nx = numeric_share((spec.get("x_axis") or {}).get("tick_labels"))
+        ny = numeric_share((spec.get("y_axis") or {}).get("tick_labels"))
+        if nx >= 0.8 and ny >= 0.8 and (len(spec.get("rows") or []) < 2 or len(spec.get("columns") or []) < 2 or len(names) < 2):
+            notes.append("read as a continuous colour map: x and y tick labels are numbers and there are no row / column names")
+            ct = "contour"
+            spec["chart_type"] = "contour"
+    return ct, spec, notes

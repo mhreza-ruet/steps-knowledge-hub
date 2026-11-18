@@ -15,8 +15,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import sys as _sys
 import matplotlib
-matplotlib.use("Agg")
+if "ipykernel" not in _sys.modules:      # scripts: no screen needed. In a notebook keep its inline backend,
+    matplotlib.use("Agg")                # otherwise plt.show() there would display nothing
 import matplotlib.pyplot as plt
 import numpy as np
 

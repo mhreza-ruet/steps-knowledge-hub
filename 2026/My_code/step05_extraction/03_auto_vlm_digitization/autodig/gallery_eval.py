@@ -389,7 +389,7 @@ def ext_polar(t, r, thr):
 def ext_bar3d(t, r, thr):
     H = np.array(t["heights"], float); span = float(H.max())
     T = {(_norm(a), _norm(b)): H[i, j] for i, a in enumerate(t["x_categories"]) for j, b in enumerate(t["y_categories"])}
-    rows = r.get("table", [])
+    rows = [x for x in r.get("table", []) if x.get("height") is not None]      # hidden bars are not extracted values
     return sum(_ok(x["height"], T.get((_norm(x["x_category"]), _norm(x["y_category"]))), span, thr) for x in rows), len(rows)
 
 
